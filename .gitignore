@@ -1,0 +1,15 @@
+ # Ignore build, install, and log directories
+/build/
+/install/
+/log/
+
+# Ignore bin and lib directories
+/bin/
+/lib/
+/lib64/
+
+# Ignore Python bytecode files
+__pycache__/
+
+# Ignore virtual environments
+/venv/
