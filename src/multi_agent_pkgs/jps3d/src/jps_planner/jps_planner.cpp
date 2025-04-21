@@ -309,16 +309,16 @@ bool JPSPlanner<Dim>::plan_occ(const Vecf<Dim> &start, const Vecf<Dim> &goal,
           }
         }
       } else if constexpr (Dim == 3) {
-        // Note: Here we only search on a 2D slice (dz = 0) as in your original
-        // code.
         for (int dx = -r; dx <= r; dx++) {
           for (int dy = -r; dy <= r; dy++) {
-            Veci<Dim> candidate = goal_int + Veci<Dim>(dx, dy, 0);
-            if (map_util_->isFree(candidate)) {
-              double dist = std::sqrt(dx * dx + dy * dy);
-              if (dist < bestDistance) {
-                bestDistance = dist;
-                bestCandidate = candidate;
+            for (int dz = -r; dz <= r; dz++) {
+              Veci<Dim> candidate = goal_int + Veci<Dim>(dx, dy, dz);
+              if (map_util_->isFree(candidate)) {
+                double dist = std::sqrt(dx * dx + dy * dy + dz * dz);
+                if (dist < bestDistance) {
+                  bestDistance = dist;
+                  bestCandidate = candidate;
+                }
               }
             }
           }

@@ -12,6 +12,7 @@
 #include <memory>
 #include <vector>
 #include <yaml-cpp/yaml.h>
+#include <chrono>
 
 namespace py = pybind11;
 
@@ -129,10 +130,10 @@ GetPath(const std::vector<double> &start_arg,
   map_util->setMap(vg_util->GetOrigin(), vg_util->GetDim(), vg_util->GetData(),
                    vg_util->GetVoxSize());
 
-  auto planner_ptr = std::make_shared<JPSPlanner<3>>(true);
+  auto planner_ptr = std::make_shared<JPSPlanner<3>>(false);
   planner_ptr->setMapUtil(map_util);
   planner_ptr->updateMap();
-  bool valid_jps = planner_ptr->plan_occ(start, goal, 1, true);
+  bool valid_jps = planner_ptr->plan_occ(start, goal, 1, false);
 
   // Retrieve path
   auto path_jps = planner_ptr->getRawPath();
@@ -151,6 +152,7 @@ bool IsLineClear(const Eigen::Vector3d &pt_start, const Eigen::Vector3d &pt_end,
   // first check if both the start and the end points are inside the grid
   Eigen::Vector3i pt_start_i(pt_start(0), pt_start(1), pt_start(2));
   Eigen::Vector3i pt_end_i(pt_end(0), pt_end(1), pt_end(2));
+  /*
   if (!vg.IsInsideGridInt(pt_start_i)) {
     std::cout << "Warning: start of the ray is outside the grid "
               << pt_start_i.transpose() << std::endl;
@@ -160,6 +162,7 @@ bool IsLineClear(const Eigen::Vector3d &pt_start, const Eigen::Vector3d &pt_end,
     std::cout << "Warning: end of the ray is outside the grid "
               << pt_end_i.transpose() << std::endl;
   }
+  */
 
   // Raycast and check if the final position is the same as the collision_pt
   Eigen::Vector3d col_pt(-1, -1, -1);
@@ -331,9 +334,9 @@ int TotalRaycast(const ::voxel_grid_util::VoxelGrid &vg_global,
   ::Eigen::Vector3d origin_grid = vg_global.GetOrigin();
   //::Eigen::Vector3d voxel_grid_range = voxel_grid_curr.GetRealDim();
   ::Eigen::Vector3d voxel_grid_range;
-  voxel_grid_range[0] = 1.0;
-  voxel_grid_range[1] = 1.0;
-  voxel_grid_range[2] = 1.0;
+  voxel_grid_range[0] = 4.0;
+  voxel_grid_range[1] = 4.0;
+  voxel_grid_range[2] = 4.0;
   ::Eigen::Vector3d origin;
 
   origin[0] = (pos_curr[0] - voxel_grid_range[0] / 2);
@@ -470,15 +473,18 @@ py::tuple step_cpp(const std::vector<std::vector<double>> &drone_positions_,
 
     try {
       // GetPath renvoie un chemin sous forme de vector<vector<double>>
-      path_raw =
-          GetPath(drone_positions_[d], actions_[d], global_vg, path_raw, true);
+      //auto start_time = std::chrono::high_resolution_clock::now();
+      path_raw = GetPath(drone_positions_[d], actions_[d], global_vg, path_raw, false);
+      //auto end_time = std::chrono::high_resolution_clock::now();
+      //std::chrono::duration<double> elapsed_time = end_time - start_time;
+      //std::cout << "GetPath computation time: " << elapsed_time.count() << " seconds" << std::endl;
     } catch (const std::exception &e) {
       // En cas d'erreur, le drone ne se déplace pas
       new_positions.push_back(start);
       continue;
     }
     if (path_raw.empty()) {
-      std::cout << "path empty" << std::endl;
+      //std::cout << "path empty" << std::endl;
       new_positions.push_back(start);
       continue;
     }
@@ -486,8 +492,11 @@ py::tuple step_cpp(const std::vector<std::vector<double>> &drone_positions_,
 
     // Échantillonner des points sur le chemin (si getPath ne renvoie que les
     // extrémités, cette fonction ajoute les points intermédiaires)
-
-    std::vector<Eigen::Vector3d> sampled_path = SamplePathPoints(path_raw, 0.3);
+    //auto start_time_sampling = std::chrono::high_resolution_clock::now();
+    std::vector<Eigen::Vector3d> sampled_path = SamplePathPoints(path_raw, 1.0);
+    //auto end_time_sampling = std::chrono::high_resolution_clock::now();
+    //std::chrono::duration<double> elapsed_time_sampling = end_time_sampling - start_time_sampling;
+    //std::cout << "SamplePathPoints computation time: " << elapsed_time_sampling.count() << " seconds" << std::endl;
     // for (const auto &point : sampled_path) {
     //   std::cout << "Sampled Point: " << point.transpose() << std::endl;
     // }
@@ -523,12 +532,16 @@ py::tuple step_cpp(const std::vector<std::vector<double>> &drone_positions_,
         observation.SetVoxelInt(cell_coord, ENV_BUILDER_FREE);
         // Raycast pour mettre à jour la grille d'observation autour du voxel
         // courant
+        //auto start_time = std::chrono::high_resolution_clock::now();
         newly_discovered += TotalRaycast(*global_vg, current_cell, observation);
+        //auto end_time = std::chrono::high_resolution_clock::now();
+        //std::chrono::duration<double> elapsed_time = end_time - start_time;
+        //std::cout << "Raycast computation time: " << elapsed_time.count() << " seconds" << std::endl;
       }
       // On s'arrête après voxels_per_step pas si le chemin est long
-      if (i + 1 >= voxels_per_step) {
-        break;
-      }
+      //if (i + 1 >= voxels_per_step) {
+        //break;
+      //}
     }
 
     // Mise à jour de la position du drone en fonction de l'avancement sur le
@@ -558,9 +571,9 @@ py::tuple step_cpp(const std::vector<std::vector<double>> &drone_positions_,
 
   // La récompense est le nombre total de voxels nouvellement découverts
   int reward = total_newly_discovered;
-  if (completeness < 0.5){
-    reward /= 2;
-  }
+  //if (completeness < 0.5){
+  //  reward /= 2;
+  //}
 
   //std::cout<<"reward :"<< reward <<std::endl;
   py::dict info; // Dictionnaire d'information (vide ici)
@@ -648,7 +661,7 @@ PYBIND11_MODULE(voxelgrid, m) {
   m.def("raycast_and_clear", &RaycastAndClear,
         "Raycast and clear voxels in a voxel grid from a start position",
         py::arg("vg"), py::arg("start"));
-
+  
   // Expose MergeVoxelGridsRay function to Python
   m.def("merge_voxel_grids", &MergeVoxelGridsRay,
         "Merge two voxel grids and return the result", py::arg("vg_old"),
