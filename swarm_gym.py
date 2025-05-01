@@ -163,7 +163,7 @@ class DroneExplorationEnv(gym.Env):
         # Pass goal_points as a parameter to step_cpp instead of raw actions.
         unknown_bef = np.sum(voxelgrid.get_data_np(self.observation) == -1)
         #start_time = time.time()
-        observation, self.count_map, done, info = voxelgrid.step_cpp(drone_positions, goal_points, self.observation, self.count_map, self.global_vg, 5)
+        observation, rew_not_discovered, done, info = voxelgrid.step_cpp(drone_positions, goal_points, self.observation, self.global_vg, 5)
         #end_time = time.time()
         #print("Time taken for step_cpp: ", end_time - start_time)
         self.drone_positions = np.array(observation["drone_positions"], dtype=np.float32).reshape(self.num_drones* 3,)
