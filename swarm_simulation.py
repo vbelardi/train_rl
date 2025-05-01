@@ -1,150 +1,122 @@
+
 import gymnasium as gym
 import torch
 import numpy as np
-import time
 from swarm_gym import DroneExplorationEnv
-import voxelgrid 
+import voxelgrid
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_checker import check_env
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback
-import torch as th
 import torch.nn.functional as F
 import torch.nn as nn
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-
-
-def downsample_voxel_grid_onehot(voxel_input, output_size):
-    """
-    Downsamples a one-hot encoded voxel grid (B, 3, D, H, W) using nearest neighbor,
-    preserving one-hot exclusivity.
-    """
-    # Convert one-hot to label
-    labels = th.argmax(voxel_input, dim=1)  # (B, D, H, W)
-
-    # Downsample using nearest neighbor
-    labels = labels.unsqueeze(1).float()
-    labels_downsampled = th.nn.functional.interpolate(labels, size=output_size, mode='nearest')
-    labels_downsampled = labels_downsampled.squeeze(1).long()
-
-    # Convert back to one-hot
-    voxel_downsampled = th.nn.functional.one_hot(labels_downsampled, num_classes=3)
-    voxel_downsampled = voxel_downsampled.permute(0, 4, 1, 2, 3).float()
-
-    return voxel_downsampled
-    # -----------------------------------------------------------------------------
+from stable_baselines3.common.vec_env import VecNormalize
 
 
 def downsample_voxel_grid_priority(voxel_input, output_size):
     """
-    Downsamples a one-hot encoded voxel grid (B, 3, D, H, W) with priority: obstacle > unknown > free.
-    Uses adaptive max-pooling per channel to preserve priority blocks.
-    
-    Args:
-      voxel_input: Tensor of shape (B,3,D,H,W), one-hot encoding of {unknown,free,obstacle}.
-      output_size: tuple (d2, h2, w2) target grid size.
-    Returns:
-      voxel_down: Tensor of shape (B,3,d2,h2,w2), one-hot with priority applied.
+    Downsamples (B,3,D,H,W) en appliquant priorité obstacle>unknown>free via adaptive pool.
     """
-    # 1) Extract per-class masks
-    unk_mask  = voxel_input[:, 0:1]  # (B,1,D,H,W)
-    free_mask = voxel_input[:, 1:2]
-    obs_mask  = voxel_input[:, 2:3]
-    
-    # 2) Adaptive max-pool each mask to output_size
-    unk_ds  = F.adaptive_max_pool3d(unk_mask,  output_size).squeeze(1)  # (B, D2,H2,W2)
-    free_ds = F.adaptive_max_pool3d(free_mask, output_size).squeeze(1)
-    obs_ds  = F.adaptive_max_pool3d(obs_mask,  output_size).squeeze(1)
-    
-    # 3) Build label grid with priority
-    # default = free (1)
-    labels = torch.ones_like(obs_ds, dtype=torch.long)
-    # override unknown (0) where unk_ds>0
-    labels[unk_ds > 0] = 0
-    # override obstacle (2) where obs_ds>0  (highest priority)
-    labels[obs_ds > 0] = 2
-    
-    # 4) Convert back to one-hot
-    voxel_down = F.one_hot(labels, num_classes=3)        # (B, D2,H2,W2, 3)
-    voxel_down = voxel_down.permute(0, 4, 1, 2, 3).float()  # (B,3,D2,H2,W2)
-    return voxel_down
-
-
-
+    unk  = voxel_input[:, 0:1]
+    free = voxel_input[:, 1:2]
+    obs  = voxel_input[:, 2:3]
+    unk_ds  = F.adaptive_max_pool3d(unk,  output_size).squeeze(1)
+    free_ds = F.adaptive_max_pool3d(free, output_size).squeeze(1)
+    obs_ds  = F.adaptive_max_pool3d(obs,  output_size).squeeze(1)
+    labels = torch.ones_like(obs_ds, dtype=torch.long)    # par défaut free=1
+    labels[unk_ds  > 0] = 0   # unknown
+    labels[obs_ds  > 0] = 2   # obstacle
+    voxel_down = F.one_hot(labels, num_classes=3)
+    return voxel_down.permute(0,4,1,2,3).float()
 
 class CustomCombinedExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space, features_dim=256):
-        """
-        Custom extractor for observation dict:
-          - "observation": a 3D voxel grid of shape (D, H, W)
-          - "drone_positions": a low-dimensional vector
-        """
-        super(CustomCombinedExtractor, self).__init__(observation_space, features_dim)
+        super().__init__(observation_space, features_dim)
+        # full voxel shape:
+        D, H, W = observation_space.spaces["observation"].shape
 
-        self.original_voxel_shape = observation_space.spaces["observation"].shape[:3]
-        self.downsampled_shape = (40, 40, 12)
-
+        # 3D CNN with larger kernels and dilation for wider receptive field
         self.cnn3d = nn.Sequential(
-            nn.Conv3d(3, 16, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool3d(2),
-            nn.Conv3d(16, 32, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool3d(2),
-            nn.Conv3d(32, 64, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool3d(2),
+            # Larger first kernel to capture broader context
+            nn.Conv3d(3, 16, kernel_size=5, padding=2, padding_mode = 'replicate'), nn.ReLU(),
+            nn.Conv3d(16, 32, kernel_size=3, padding=1, padding_mode = 'replicate'), nn.ReLU(), nn.AvgPool3d(2), 
+            nn.Conv3d(32, 64, kernel_size=(5,5,3), padding=(2,2,1), padding_mode = 'replicate'), nn.ReLU(), nn.AvgPool3d(2),
             nn.Flatten()
         )
+        # determine flattened size
+        with torch.no_grad():
+            dummy = torch.zeros(1, 3, D//4, H//4, W//4)
+            cnn_out = self.cnn3d(dummy).shape[1]
 
-        dummy_voxel = th.zeros(1, 3, *self.downsampled_shape)
-        cnn_output_dim = self.cnn3d(dummy_voxel).shape[1]
+        # project CNN features into a compact vector
+        self.cnn_proj = nn.Sequential(
+            nn.Linear(cnn_out, 512), nn.ReLU(), nn.LayerNorm(512)
+        )
 
-        fusion_input_dim = cnn_output_dim + 3  # 3 for drone_positions
-        self.fusion_mlp = nn.Sequential(
-            nn.Linear(fusion_input_dim, features_dim),
-            nn.ReLU()
+        # MLP for drone position encoding
+        pos_dim = observation_space.spaces["drone_positions"].shape[0]
+        self.pos_mlp = nn.Sequential(
+            nn.Linear(pos_dim, 64), nn.ReLU(),
+            nn.Linear(64, 128), nn.ReLU(),
+            nn.LayerNorm(128)
+        )
+
+        # fusion MLP
+        self.fusion = nn.Sequential(
+            nn.Linear(512 + 128, features_dim), nn.ReLU()
         )
 
         self._features_dim = features_dim
 
-    def forward(self, observations: th.Tensor) -> th.Tensor:
-        voxel = observations["observation"]  # (B, D, H, W)
+    def forward(self, obs):
+        # one-hot encode occupancy channels
+        vox = obs["observation"].long()
+        u = (vox == 0).unsqueeze(1).float()
+        f = (vox == 1).unsqueeze(1).float()
+        o = (vox == 2).unsqueeze(1).float()
+        x = torch.cat([u, f, o], dim=1)  # (B,2,D,H,W)
+        _, D, H, W = obs["observation"].shape
+        x_small = F.adaptive_avg_pool3d(x, output_size=(D//4, H//4, W//4))
 
-        # One-hot encoding
-        channel_unknown  = (voxel == 0).unsqueeze(1).float()
-        channel_free     = (voxel == 1).unsqueeze(1).float()
-        channel_obstacle = (voxel == 2).unsqueeze(1).float()
-        voxel_input = th.cat([channel_unknown, channel_free, channel_obstacle], dim=1)  # (B, 3, D, H, W)
+        # CNN feature extraction
+        c = self.cnn3d(x_small)        # (B, cnn_out)
+        c = self.cnn_proj(c)     # (B,512)
 
-        # Downsample
-        voxel_input_downsampled = downsample_voxel_grid_priority(voxel_input, self.downsampled_shape)
+        # position embedding
+        p = self.pos_mlp(obs["drone_positions"])  # (B,128)
 
-        # CNN
-        cnn_features = self.cnn3d(voxel_input_downsampled)
+        # fuse and return
+        return self.fusion(torch.cat([c, p], dim=1))  # (B, features_dim)
 
-        # Concatenate with drone position
-        fused = th.cat([cnn_features, observations["drone_positions"]], dim=1)
-        features = self.fusion_mlp(fused)
-        return features
-
-
-policy_kwargs = dict(
-    features_extractor_class=CustomCombinedExtractor,
-    features_extractor_kwargs=dict(features_dim=256)
-)
 
 if __name__ == "__main__":
-    env = make_vec_env(DroneExplorationEnv, n_envs=10, vec_env_cls=SubprocVecEnv)
+    # création de l'env
+    env = make_vec_env(DroneExplorationEnv, n_envs=20, vec_env_cls=SubprocVecEnv)
+    #env = VecNormalize(env, norm_obs=True, norm_reward=True)
     check_env(DroneExplorationEnv(), warn=True)
 
-    model = PPO("MultiInputPolicy", env, policy_kwargs=policy_kwargs, verbose=1)
+    policy_kwargs = dict(
+        features_extractor_class=CustomCombinedExtractor,
+        features_extractor_kwargs=dict(features_dim=256)
+    )
 
-    checkpoint_callback = CheckpointCallback(save_freq=50_000, save_path="./models/", name_prefix="ppo_checkpoint")
-    model.learn(total_timesteps=10_000_000, callback=checkpoint_callback)
+    model = PPO(
+        "MultiInputPolicy", env,
+        policy_kwargs=policy_kwargs,
+        verbose=1,
+        n_steps=512,
+        batch_size=128,
+        ent_coef=0.05,
+        learning_rate=1e-4,
+        clip_range=0.1,
+
+    )
+
+    cb = CheckpointCallback(save_freq=50_000, save_path="./models/", name_prefix="ppo_ckpt")
+    model.learn(total_timesteps=10_000_000, callback=cb)
     model.save("ppo_drone_exploration_model")
-
 
 '''
 if __name__ == "__main__":
@@ -158,7 +130,7 @@ if __name__ == "__main__":
 
     # 3. (Optional) Set up a checkpoint callback so you get periodic backups
     checkpoint_callback = CheckpointCallback(
-        save_freq=100_000,
+        save_freq=50_000,
         save_path="./models/",
         name_prefix="ppo_checkpoint"
     )

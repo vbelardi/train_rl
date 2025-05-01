@@ -14,16 +14,6 @@ import open3d as o3d
 import voxelgrid
 
 
-'''
-possible problems :
-reward depending on completeness of the grid or not
-following path just for a few steps or until goal
-grid and drone positions are flatten in a single vector and has same weight while drone positions should be more important
-
-
-change environments and obstacles for each simulation
-add drones
-'''
 
 # Check if CUDA is available
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -42,7 +32,7 @@ class DroneExplorationEnv(gym.Env):
         self.voxel_space_size = self.global_vg.get_dim()
         self.origin = self.global_vg.get_origin()
 
-        self.max_steps = 1000
+        self.max_steps = 500
         self.step_count = 0
         self.total_reward = 0
         
@@ -173,29 +163,36 @@ class DroneExplorationEnv(gym.Env):
         # Pass goal_points as a parameter to step_cpp instead of raw actions.
         unknown_bef = np.sum(voxelgrid.get_data_np(self.observation) == -1)
         #start_time = time.time()
-        observation, _, done, info = voxelgrid.step_cpp(drone_positions, goal_points, self.observation, self.global_vg, 3)
+        observation, self.count_map, done, info = voxelgrid.step_cpp(drone_positions, goal_points, self.observation, self.count_map, self.global_vg, 5)
         #end_time = time.time()
         #print("Time taken for step_cpp: ", end_time - start_time)
         self.drone_positions = np.array(observation["drone_positions"], dtype=np.float32).reshape(self.num_drones* 3,)
         self.observation = observation["observation"]
         unknown_after = np.sum(voxelgrid.get_data_np(self.observation) == -1)
+
         completeness = 1 - (unknown_after / (self.voxel_space_size[0] * self.voxel_space_size[1] * self.voxel_space_size[2]))
-        reward = (unknown_bef - unknown_after)*0.01
-        if reward < 0.2:
-            reward = -1.0
-        elif reward <1.0:
-            if completeness > 0.9:
-                reward = 0.0
-            else:
-                reward = -1.0
-        elif reward < 5.0:
-            reward = 0.5
-        elif reward > 20.0:
-            reward = 5.0
-        elif reward > 10.0:
-            reward = 2.0
-        else:
-            reward = 1.0
+
+        newly_discovered = unknown_bef - unknown_after
+
+        # 1. Récompense principale (à 0.005 ça fait +5 pour 1000)
+        reward = 0.002 * newly_discovered
+
+        # 2. Pénalité si on n’a rien découvert
+        if newly_discovered <= 10:
+            reward = -0.1  # pour éviter les steps vides
+
+        # 3. Récompense secondaire (redondance d’info)
+        reward += 0.0002 * rew_not_discovered
+
+    
+        # 4. Pénalité de mouvement
+        reward -= 0.5 * (self.step_count / self.max_steps)
+        
+        # 5. Bonus si terminé avant les max_steps
+        if done:
+            reward += max(0, self.max_steps - self.step_count) * 0.05
+        
+
         self.total_reward += reward
     
         
@@ -209,7 +206,8 @@ class DroneExplorationEnv(gym.Env):
 
 
         if self.step_count > self.max_steps:
-            reward = -10
+            reward = -20
+            print("Completessness: ", completeness)
             return observation, reward, done, True, info
         return observation, reward, done, False, info
 
