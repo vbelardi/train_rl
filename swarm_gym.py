@@ -209,7 +209,7 @@ class DroneExplorationEnv(gym.Env):
         goal_points = np.array(goal_points)
         # Pass goal_points as a parameter to step_cpp instead of raw actions.
         #unknown_bef = np.sum(voxelgrid.get_data_np(self.observation) == -1)
-        #old_counts = voxelgrid.get_data_np(self.count_map)
+        old_counts = voxelgrid.get_data_np(self.count_map)
         #start_time = time.time()
         observation, self.count_map, done, info = voxelgrid.step_cpp(drone_positions, goal_points, self.observation, self.count_map, self.global_vg, 5)
         #end_time = time.time()
@@ -224,14 +224,13 @@ class DroneExplorationEnv(gym.Env):
         #reward = 0.0002 * newly_discovered
         reward = 0.0
         counts = voxelgrid.get_data_np(self.count_map)
+        difference = counts - old_counts
         counts = counts/(self.max_steps*5)
         for i in range(counts.shape[0]):
             for j in range(counts.shape[1]):
                 for k in range(counts.shape[2]):
-                    if counts[i,j,k] > 0:
-                        reward += (1 - counts[i,j,k])/(self.voxel_space_size[0] * self.voxel_space_size[1] * self.voxel_space_size[2])
-                    else:
-                        reward -= 1/(self.voxel_space_size[0] * self.voxel_space_size[1] * self.voxel_space_size[2])
+                    if difference[i,j,k] > 0:
+                        reward += (1 - counts[i,j,k])/(4**3 / 0.3**3)
         #reward -= 0.0002 * (np.sum(counts) - np.sum(old_counts) - newly_discovered)
 
         self.total_reward += reward
