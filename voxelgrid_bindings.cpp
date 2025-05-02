@@ -287,18 +287,17 @@ double ComputeMapCompleteness(::voxel_grid_util::VoxelGrid &vg_global) {
   return completeness;
 }
 
-::voxel_grid_util::VoxelGrid
-MergeVoxelGridsRay(const ::voxel_grid_util::VoxelGrid &vg_old,
-                   const ::voxel_grid_util::VoxelGrid &vg_new) {
+void MergeVoxelGridsRay(const ::voxel_grid_util::VoxelGrid &vg_old,
+                   ::voxel_grid_util::VoxelGrid &vg_new,
+                   ::voxel_grid_util::VoxelGrid &count_map) {
   // create final voxel grid
-  ::voxel_grid_util::VoxelGrid vg_final = vg_new;
 
   // update the final voxel grid by going through each voxel and merging the old
   // with the new
-  double voxel_size = vg_final.GetVoxSize();
-  ::Eigen::Vector3i dim = vg_final.GetDim();
-  ::Eigen::Vector3d offset_double = (vg_final.GetOrigin() - vg_old.GetOrigin());
-  /* ::std::cout << "vg_final origin:" << vg_final.GetOrigin().transpose() */
+  double voxel_size = vg_new.GetVoxSize();
+  ::Eigen::Vector3i dim = vg_new.GetDim();
+  ::Eigen::Vector3d offset_double = (vg_new.GetOrigin() - vg_old.GetOrigin());
+  /* ::std::cout << "vg_new origin:" << vg_new.GetOrigin().transpose() */
   /* << ::std::endl; */
   /* ::std::cout << "vg_old origin:" << vg_old.GetOrigin().transpose() */
   /* << ::std::endl; */
@@ -314,18 +313,22 @@ MergeVoxelGridsRay(const ::voxel_grid_util::VoxelGrid &vg_old,
         // unknown; in that cast we replace them with the values seen in the old
         // voxel grid
         ::Eigen::Vector3i coord(i, j, k);
-        if (vg_final.IsUnknown(coord)) {
-          ::Eigen::Vector3i coord_final = coord + offset_int;
+        ::Eigen::Vector3i coord_final = coord + offset_int;
+        if (!vg_old.IsUnknown(coord_final)) {
+          count_map.SetVoxelInt(coord, count_map.GetVoxelInt(coord) + 1);
+        }
+        if (vg_new.IsUnknown(coord)) {
+          //::Eigen::Vector3i coord_final = coord + offset_int;
           int8_t vox_value = vg_old.GetVoxelInt(coord_final);
-          vg_final.SetVoxelInt(coord, vox_value);
+          vg_new.SetVoxelInt(coord, vox_value);
         }
       }
     }
   }
-  return vg_final;
 }
 
 int TotalRaycast(const ::voxel_grid_util::VoxelGrid &vg_global,
+                 ::voxel_grid_util::VoxelGrid &count_map,
                  Eigen::Ref<const Eigen::Vector3d> pos_curr,
                  ::voxel_grid_util::VoxelGrid &voxel_grid_curr) {
 
@@ -390,7 +393,7 @@ int TotalRaycast(const ::voxel_grid_util::VoxelGrid &vg_global,
   RaycastAndClear(vg, pos_curr_local);
   newly_discovered = int(ComputeMapCompleteness(vg) * vg.GetDataSize());
   // std::cout<<ComputeMapCompleteness(vg)<<"  "<<vg.GetDataSize()<<std::endl;
-  voxel_grid_curr = MergeVoxelGridsRay(vg, voxel_grid_curr);
+  MergeVoxelGridsRay(vg, voxel_grid_curr, count_map);
   return newly_discovered;
 }
 
@@ -440,158 +443,10 @@ SamplePathPoints(const std::vector<std::vector<double>> &raw_path,
   }
   return sampled;
 }
-/*
-// ==================================================================
-// Fonction step_cpp qui intègre planification, échantillonnage du chemin et
-// mise à jour de la grille d'observation, le tout en C++ pour accélérer
-// l'environnement Gym.
-py::tuple step_cpp(const std::vector<std::vector<double>> &drone_positions_,
-                   const std::vector<std::vector<double>> &actions_,
-                   voxel_grid_util::VoxelGrid &observation,
-                   std::shared_ptr<voxel_grid_util::VoxelGrid> global_vg,
-                   int voxels_per_step) {
-
-  std::vector<Eigen::Vector3d> drone_positions;
-  std::vector<Eigen::Vector3d> actions;
-  for (const auto &vec : drone_positions_) {
-    drone_positions.push_back(Eigen::Vector3d(vec[0], vec[1], vec[2]));
-  }
-  for (const auto &vec : actions_) {
-    actions.push_back(Eigen::Vector3d(vec[0], vec[1], vec[2]));
-  }
-
-  int num_drones = drone_positions.size();
-  int total_newly_discovered = 0;
-  std::vector<Eigen::Vector3d> new_positions;
-  int reward_not_discovered = 0;
-
-  // Pour chaque drone, planifier le chemin et faire progresser le drone
-  for (int d = 0; d < num_drones; d++) {
-    Eigen::Vector3d start = drone_positions[d];
-    Eigen::Vector3d target = actions[d];
-    std::vector<std::vector<double>> path_raw;
-
-    try {
-      path_raw =
-          GetPath(drone_positions_[d], actions_[d], global_vg, path_raw, false);
-    } catch (const std::exception &e) {
-      // En cas d'erreur, le drone ne se déplace pas
-      new_positions.push_back(start);
-      continue;
-    }
-    if (path_raw.empty()) {
-      // std::cout << "path empty" << std::endl;
-      new_positions.push_back(start);
-      continue;
-    }
-
-    // Échantillonner des points sur le chemin (si getPath ne renvoie que les
-    // extrémités, cette fonction ajoute les points intermédiaires)
-    // auto start_time_sampling = std::chrono::high_resolution_clock::now();
-    std::vector<Eigen::Vector3d> sampled_path = SamplePathPoints(path_raw, 1.0);
-    int steps = sampled_path.size();
-    int newly_discovered = 0;
-    bool wall_encountered = false;
-    int collision_index = 0;
-    Eigen::Vector3d new_pos;
-
-    // Parcourir le chemin échantillonné point par point
-    for (int i = 0; i < steps; i++) {
-      auto old_data = observation.GetData();
-      int nb_unk_old = 0;
-      for (int i = 0; i < old_data.size(); i++) {
-        Eigen::Vector3i coord_obs = observation.IdxToCoord(i);
-        if (observation.GetVoxelInt(coord_obs) == ENV_BUILDER_UNK) {
-          nb_unk_old++;
-        }
-      }
-      Eigen::Vector3d current_cell = sampled_path[i];
-      // On considère la position voxel sous forme d'entiers (arrondi)
-      Eigen::Vector3i cell_coord;
-      cell_coord[0] = floor((current_cell[0] - observation.GetOrigin()[0]) /
-                            observation.GetVoxSize());
-      cell_coord[1] = floor((current_cell[1] - observation.GetOrigin()[1]) /
-                            observation.GetVoxSize());
-      cell_coord[2] = floor((current_cell[2] - observation.GetOrigin()[2]) /
-                            observation.GetVoxSize());
-
-      // Si le voxel dans la grille d'état est un mur (valeur -1)
-      if (global_vg->GetVoxelInt(cell_coord) == ENV_BUILDER_OCC) {
-        if (observation.GetVoxelInt(cell_coord) == ENV_BUILDER_UNK)
-          newly_discovered++;
-        observation.SetVoxelInt(cell_coord, ENV_BUILDER_OCC);
-        wall_encountered = true;
-        collision_index = i;
-        break;
-      } else if (global_vg->GetVoxelInt(cell_coord) == ENV_BUILDER_FREE) {
-        if (observation.GetVoxelInt(cell_coord) == ENV_BUILDER_UNK)
-          newly_discovered++;
-        observation.SetVoxelInt(cell_coord, ENV_BUILDER_FREE);
-        newly_discovered += TotalRaycast(*global_vg, current_cell, observation);
-      }
-      // On s'arrête après voxels_per_step pas si le chemin est long
-      if (i + 1 > voxels_per_step) {
-        auto new_data = observation.GetData();
-        int nb_unk = 0;
-        for (int i = 0; i < new_data.size(); i++) {
-          Eigen::Vector3i coord_obs_new = observation.IdxToCoord(i);
-          if (observation.GetVoxelInt(coord_obs_new) == ENV_BUILDER_UNK) {
-            nb_unk++;
-          }
-        }
-        reward_not_discovered += (nb_unk_old - nb_unk);
-      }
-    }
-
-    // Mise à jour de la position du drone en fonction de l'avancement sur le
-    // chemin
-    new_pos = start;
-    if (wall_encountered) {
-      if (collision_index == 0)
-        new_pos = start;
-      else
-        new_pos = sampled_path[collision_index - 1];
-    } else {
-      if (sampled_path.size() > voxels_per_step)
-        new_pos = sampled_path[voxels_per_step - 1];
-      else
-        new_pos = sampled_path[sampled_path.size() - 1];
-    }
-    new_positions.push_back(new_pos);
-    total_newly_discovered += newly_discovered;
-  }
-
-  // Mise à jour globale des positions des drones
-  drone_positions = new_positions;
-
-  // Calcul du nombre de voxels déjà observés dans la grille d'observation
-  double completeness = ComputeMapCompleteness(observation);
-  // std::cout<<completeness<<std::endl;
-  bool done = (completeness >= 0.99);
-
-  // La récompense est le nombre total de voxels nouvellement découverts
-  int reward = total_newly_discovered;
-  // if (completeness < 0.5){
-  //   reward /= 2;
-  // }
-  // std::cout<<"reward :"<< reward <<std::endl;
-  py::dict info; // Dictionnaire d'information (vide ici)
-
-  std::vector<std::vector<double>> drone_positions_vector;
-  for (const auto &vec : drone_positions) {
-    drone_positions_vector.push_back({vec[0], vec[1], vec[2]});
-  }
-
-  py::dict observation_dict;
-  observation_dict["observation"] = observation;
-  observation_dict["drone_positions"] = drone_positions_vector;
-
-  return py::make_tuple(observation_dict, reward_not_discovered, done, info);
-}
-*/
 
 
 void processVoxel(voxel_grid_util::VoxelGrid &obs,
+                  voxel_grid_util::VoxelGrid &count_map,
                   const std::shared_ptr<voxel_grid_util::VoxelGrid> &global_vg,
                   const Eigen::Vector3d &pt_world)
 {
@@ -599,14 +454,15 @@ void processVoxel(voxel_grid_util::VoxelGrid &obs,
   c[0] = floor((pt_world[0] - obs.GetOrigin()[0]) / obs.GetVoxSize());
   c[1] = floor((pt_world[1] - obs.GetOrigin()[1]) / obs.GetVoxSize());
   c[2] = floor((pt_world[2] - obs.GetOrigin()[2]) / obs.GetVoxSize());
-
+  int old = count_map.GetVoxelInt(c);
+  count_map.SetVoxelInt(c, old+1);
   if (obs.GetVoxelInt(c) == ENV_BUILDER_UNK) {
     // mark occupancy or free
     if (global_vg->GetVoxelInt(c) == ENV_BUILDER_OCC) {
       obs.SetVoxelInt(c, ENV_BUILDER_OCC);
     } else {
       obs.SetVoxelInt(c, ENV_BUILDER_FREE);
-      TotalRaycast(*global_vg, pt_world, obs);
+      TotalRaycast(*global_vg, count_map, pt_world, obs);
     }
     return;
   }
@@ -629,6 +485,7 @@ int countUnknownVoxels(const voxel_grid_util::VoxelGrid &vg) {
 py::tuple step_cpp(const std::vector<std::vector<double>> &drone_positions_,
                    const std::vector<std::vector<double>> &actions_,
                    voxel_grid_util::VoxelGrid &observation,
+                   voxel_grid_util::VoxelGrid &count_map,
                    std::shared_ptr<voxel_grid_util::VoxelGrid> global_vg,
                    int voxels_per_step)
 {
@@ -670,13 +527,13 @@ py::tuple step_cpp(const std::vector<std::vector<double>> &drone_positions_,
       //int nb_unk_old = countUnknownVoxels(observation);
 
       // process
-      processVoxel(observation, global_vg, sampled[i]);
+      processVoxel(observation, count_map, global_vg, sampled[i]);
 
       // your preserved block: count new unknowns
       //int nb_unk = countUnknownVoxels(observation);
       //reward_truncated += (nb_unk_old - nb_unk);
     }
-    
+    /*
     std::vector<voxel_grid_util::voxel_data_type> data_copy = observation.GetData();
     voxel_grid_util::VoxelGrid obs_copy(
         observation.GetOrigin(),
@@ -684,7 +541,7 @@ py::tuple step_cpp(const std::vector<std::vector<double>> &drone_positions_,
         observation.GetVoxSize(),
         data_copy
     );
-
+    
     // 5) Full-path loop on the copy, with “count unknowns” block
     for (int i = voxels_per_step; i < steps; i++) {
       // count old unknowns
@@ -696,7 +553,9 @@ py::tuple step_cpp(const std::vector<std::vector<double>> &drone_positions_,
       // your preserved block: count new unknowns
       int nb_unk = countUnknownVoxels(obs_copy);
       reward_full_path += (nb_unk_old - nb_unk);
+      
     }
+    */
     
 
     // 6) Advance new position according to truncated motion
@@ -727,7 +586,7 @@ py::tuple step_cpp(const std::vector<std::vector<double>> &drone_positions_,
   obs_dict["drone_positions"] = drone_positions_vector;
 
   py::dict info;
-  return py::make_tuple(obs_dict, reward_full_path, done, info);
+  return py::make_tuple(obs_dict, count_map, done, info);
 }
 
 
@@ -806,10 +665,10 @@ PYBIND11_MODULE(voxelgrid, m) {
   // Expose MergeVoxelGridsRay function to Python
   m.def("merge_voxel_grids", &MergeVoxelGridsRay,
         "Merge two voxel grids and return the result", py::arg("vg_old"),
-        py::arg("vg_new"));
+        py::arg("vg_new"), py::arg("count_map"));
 
   m.def("step_cpp", &step_cpp, py::arg("drone_positions"), py::arg("actions"),
-        py::arg("observation"), py::arg("global_vg"),
+        py::arg("observation"), py::arg("count_map"), py::arg("global_vg"),
         py::arg("voxels_per_step"),
         "Exécute un pas dans l'environnement et renvoie (observation, reward, "
         "done, info)");

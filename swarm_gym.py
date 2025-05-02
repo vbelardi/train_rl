@@ -41,7 +41,11 @@ class DroneExplorationEnv(gym.Env):
             self.origin, self.global_vg.get_dim(), 
             self.voxel_size, False)
         
-        
+        self.count_map = voxelgrid.VoxelGrid(
+            self.origin, self.global_vg.get_dim(), 
+            self.voxel_size, True
+        )
+
 
         # Initialisation des positions des drones
         self.grid_origin = np.array(self.origin)
@@ -49,7 +53,10 @@ class DroneExplorationEnv(gym.Env):
         # You might also want to leave a small margin (e.g., 0.1) from the boundaries.
         self.margin = 0.2
 
+        self.episode_counter = 0
+
         self.drone_positions = self.generate_free_positions()
+
 
         #self.render_open3d_init()
         
@@ -65,47 +72,87 @@ class DroneExplorationEnv(gym.Env):
 
 
     def reset(self, seed=None, options=None):
-        # Optionally, handle the seed if needed:
         if seed is not None:
-            # You could use the seed to reset randomness in your environment.
-            pass
+            np.random.seed(seed)
 
-        # Recreate your voxel grid with your desired configuration.
         self.global_vg = voxelgrid.create_voxelgrid_from_config(
             "./src/multi_agent_pkgs/env_builder/config/env_RL20_config.yaml"
         )
         self.total_reward = 0
         self.step_count = 0
+        self.episode_counter += 1
 
-        self.drone_positions = self.generate_free_positions()
-        
-        self.observation = voxelgrid.VoxelGrid(
+        # Utiliser sampling intelligent (80% du temps) après quelques épisodes ?
+        self.drone_positions = self.generate_free_positions(use_reset_sampling=True)
+
+        # Réinitialiser la carte de comptage (visite des voxels)
+        self.count_map = voxelgrid.VoxelGrid(
             self.origin, self.global_vg.get_dim(), 
-            self.voxel_size, False)
-        #self.drone_positions = np.array([self.initial_position1, self.initial_position2, self.initial_position3])
+            self.voxel_size, True
+        )
 
-        # Gymnasium expects reset() to return (observation, info)
+        self.observation = voxelgrid.VoxelGrid(
+            self.origin, self.global_vg.get_dim(),
+            self.voxel_size, False
+        )
+
+
         return self.get_observation(), {}
+
     
-    def generate_free_positions(self):
+    def generate_free_positions(self, use_reset_sampling=False):
         """
-        Generate initial positions for each drone such that they lie in a free voxel.
-        Returns a concatenated array of positions with shape (3 * num_drones,).
+        Génère des positions initiales pour chaque drone dans des voxels libres.
+        Si use_reset_sampling=True, utilise la carte de comptage comme distribution d’échantillonnage inverse.
         """
         positions = []
+        
+        count_data = voxelgrid.get_data_np(self.count_map)
+        occupancy_data = voxelgrid.get_data_np(self.global_vg)
+        '''
+        # Masque : on veut uniquement les voxels au sol visités au moins une fois
+        mask = (count_data >= 0) & (voxelgrid.get_data_np(self.global_vg) == 0)
+        flat_counts = count_data.flatten()
+        mask_flat = mask.flatten()
+
+        # Échantillonnage inversement proportionnel à la fréquence
+        if use_reset_sampling and np.any(mask_flat) and self.episode_counter > 3:
+            inv_weights = np.where(mask_flat, 1 / (flat_counts + 1e-5), 0)
+            inv_weights /= inv_weights.sum()
+
+            # Choisir un voxel indexé selon les poids inverses
+            flat_indices = np.arange(len(flat_counts))
+            attempts = 0
+            while len(positions) < self.num_drones and attempts < 50:
+                sampled_idx = np.random.choice(flat_indices, p=inv_weights)
+                z = sampled_idx % count_data.shape[2]
+                y = (sampled_idx // count_data.shape[2]) % count_data.shape[1]
+                x = sampled_idx // (count_data.shape[1] * count_data.shape[2])
+
+                if occupancy_data[x, y, z] == 0:
+                    real_pos = np.array([x, y, z]) * self.voxel_size + np.array(self.origin)
+                    positions.append(real_pos)
+                attempts += 1
+            if len(positions) < self.num_drones:
+                print("Not enough free voxels found.")
+
+        else:
+        '''
+        # Fallback : uniforme aléatoire
         for _ in range(self.num_drones):
             while True:
-                pos = np.random.uniform(low=self.grid_origin + self.margin,
-                                        high=self.grid_origin + self.grid_dims - self.margin,
-                                        size=(3,))
-                # Compute grid index from continuous position.
+                pos = np.random.uniform(
+                    low=self.grid_origin + self.margin,
+                    high=self.grid_origin + self.grid_dims - self.margin,
+                    size=(3,)
+                )
                 voxel_index = np.floor((pos - self.global_vg.get_origin()) / self.voxel_size).astype(int)
-                # Check if voxel is free (assuming get_voxel_int returns 0 for free)
                 if self.global_vg.get_voxel_int(voxel_index.tolist()) == 0:
                     positions.append(pos)
                     break
-        # Concatenate positions into a 1D array, shape: (3 * num_drones,)
+
         return np.concatenate(positions)
+
 
 
     def get_observation(self):
@@ -161,9 +208,10 @@ class DroneExplorationEnv(gym.Env):
             goal_points.append(goal_point)
         goal_points = np.array(goal_points)
         # Pass goal_points as a parameter to step_cpp instead of raw actions.
-        unknown_bef = np.sum(voxelgrid.get_data_np(self.observation) == -1)
+        #unknown_bef = np.sum(voxelgrid.get_data_np(self.observation) == -1)
+        #old_counts = voxelgrid.get_data_np(self.count_map)
         #start_time = time.time()
-        observation, rew_not_discovered, done, info = voxelgrid.step_cpp(drone_positions, goal_points, self.observation, self.global_vg, 5)
+        observation, self.count_map, done, info = voxelgrid.step_cpp(drone_positions, goal_points, self.observation, self.count_map, self.global_vg, 5)
         #end_time = time.time()
         #print("Time taken for step_cpp: ", end_time - start_time)
         self.drone_positions = np.array(observation["drone_positions"], dtype=np.float32).reshape(self.num_drones* 3,)
@@ -172,26 +220,19 @@ class DroneExplorationEnv(gym.Env):
 
         completeness = 1 - (unknown_after / (self.voxel_space_size[0] * self.voxel_space_size[1] * self.voxel_space_size[2]))
 
-        newly_discovered = unknown_bef - unknown_after
-
-        # 1. Récompense principale (à 0.005 ça fait +5 pour 1000)
-        reward = 0.002 * newly_discovered
-
-        # 2. Pénalité si on n’a rien découvert
-        if newly_discovered <= 10:
-            reward = -0.1  # pour éviter les steps vides
-
-        # 3. Récompense secondaire (redondance d’info)
-        reward += 0.0002 * rew_not_discovered
-
-    
-        # 4. Pénalité de mouvement
-        reward -= 0.5 * (self.step_count / self.max_steps)
-        
-        # 5. Bonus si terminé avant les max_steps
-        if done:
-            reward += max(0, self.max_steps - self.step_count) * 0.05
-        
+        #newly_discovered = unknown_bef - unknown_after
+        #reward = 0.0002 * newly_discovered
+        reward = 0.0
+        counts = voxelgrid.get_data_np(self.count_map)
+        counts = counts/(self.max_steps*5)
+        for i in range(counts.shape[0]):
+            for j in range(counts.shape[1]):
+                for k in range(counts.shape[2]):
+                    if counts[i,j,k] > 0:
+                        reward += (1 - counts[i,j,k])/(self.voxel_space_size[0] * self.voxel_space_size[1] * self.voxel_space_size[2])
+                    else:
+                        reward -= 1/(self.voxel_space_size[0] * self.voxel_space_size[1] * self.voxel_space_size[2])
+        #reward -= 0.0002 * (np.sum(counts) - np.sum(old_counts) - newly_discovered)
 
         self.total_reward += reward
     
@@ -206,7 +247,6 @@ class DroneExplorationEnv(gym.Env):
 
 
         if self.step_count > self.max_steps:
-            reward = -20
             print("Completessness: ", completeness)
             return observation, reward, done, True, info
         return observation, reward, done, False, info

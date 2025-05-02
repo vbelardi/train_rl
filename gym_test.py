@@ -25,7 +25,7 @@ class Custom3DGridExtractor(BaseFeaturesExtractor):
             nn.Flatten()
         )
         with torch.no_grad():
-            d = D//2; h = H//2; w = W//2
+            d = D//4; h = H//4; w = W//4
             dummy = torch.zeros(1,3,d,h,w)
             flat = self.cnn3d(dummy).shape[1]
         # position MLP
@@ -46,7 +46,7 @@ class Custom3DGridExtractor(BaseFeaturesExtractor):
         u = (v==0).unsqueeze(1).float()
         f = (v==1).unsqueeze(1).float()
         o = (v==2).unsqueeze(1).float()
-        x = torch.cat([u,f,o],1)
+        x = torch.cat([u,f,o],dim=1)
         _, D, H, W = obs["observation"].shape
         x = F.adaptive_avg_pool3d(x, output_size=(D//4, H//4, W//4))
         c = self.cnn3d(x)
@@ -58,9 +58,9 @@ def make_env():
     return env
 
 if __name__ == "__main__":
-    venv = SubprocVecEnv([make_env]*20)
+    venv = make_vec_env(DroneExplorationEnv, n_envs=20, vec_env_cls=SubprocVecEnv)
     #venv = VecNormalize(venv, norm_obs=True, norm_reward=True)
-    venv = VecFrameStack(venv, n_stack=4)
+    #venv = VecFrameStack(venv, n_stack=4)
 
     policy_kwargs = dict(
         features_extractor_class=Custom3DGridExtractor,
@@ -75,6 +75,6 @@ if __name__ == "__main__":
         gae_lambda=0.95, ent_coef=1e-2,
         clip_range=0.2, verbose=1
     )
-
-    model.learn(total_timesteps=10_000_000)
+    cb = CheckpointCallback(save_freq=25_000, save_path="./models/", name_prefix="rppo_check")
+    model.learn(total_timesteps=10_000_000, callback=cb)
     model.save("rppo_3dcuriosity")
