@@ -32,7 +32,7 @@ class DroneExplorationEnv(gym.Env):
         self.voxel_space_size = self.global_vg.get_dim()
         self.origin = self.global_vg.get_origin()
 
-        self.max_steps = 500
+        self.max_steps = 512
         self.step_count = 0
         self.total_reward = 0
         
@@ -56,6 +56,7 @@ class DroneExplorationEnv(gym.Env):
         self.episode_counter = 0
 
         self.drone_positions = self.generate_free_positions()
+        #self.drone_positions = np.array((10.0, 10.0, 3.0), dtype=np.float32)
 
 
         #self.render_open3d_init()
@@ -84,6 +85,7 @@ class DroneExplorationEnv(gym.Env):
 
         # Utiliser sampling intelligent (80% du temps) après quelques épisodes ?
         self.drone_positions = self.generate_free_positions(use_reset_sampling=True)
+        #self.drone_positions = np.array((10.0, 10.0, 3.0), dtype=np.float32)
 
         # Réinitialiser la carte de comptage (visite des voxels)
         self.count_map = voxelgrid.VoxelGrid(
@@ -217,21 +219,48 @@ class DroneExplorationEnv(gym.Env):
         self.drone_positions = np.array(observation["drone_positions"], dtype=np.float32).reshape(self.num_drones* 3,)
         self.observation = observation["observation"]
         unknown_after = np.sum(voxelgrid.get_data_np(self.observation) == -1)
-
+        '''
         completeness = 1 - (unknown_after / (self.voxel_space_size[0] * self.voxel_space_size[1] * self.voxel_space_size[2]))
 
-        #newly_discovered = unknown_bef - unknown_after
-        #reward = 0.0002 * newly_discovered
         reward = 0.0
         counts = voxelgrid.get_data_np(self.count_map)
         difference = counts - old_counts
         counts = counts/(self.max_steps*5)
-        for i in range(counts.shape[0]):
-            for j in range(counts.shape[1]):
-                for k in range(counts.shape[2]):
-                    if difference[i,j,k] > 0:
-                        reward += (1 - counts[i,j,k])/(4**3 / 0.3**3)
-        #reward -= 0.0002 * (np.sum(counts) - np.sum(old_counts) - newly_discovered)
+        diff_mask = difference > 0
+        
+        reward -= 0.01
+        voxel_rewards = (1.0 - counts)[diff_mask]
+        reward = voxel_rewards.sum() / (4**3 / 0.3**3)
+        '''
+        completeness = 1 - (unknown_after / (self.voxel_space_size[0] * self.voxel_space_size[1] * self.voxel_space_size[2]))
+    
+        # Progressive reward scaling - higher rewards for later exploration
+        if completeness > 0.8:
+            exploration_scale = 2.0  # Triple reward for exploring last 20%
+        elif completeness > 0.85:
+            exploration_scale = 3.0
+        elif completeness > 0.9:
+            exploration_scale = 5.0  # Five times reward for last 10%
+        elif completeness > 0.93:
+            exploration_scale = 10.0
+        elif completeness > 0.95:
+            exploration_scale = 15.0
+        else:
+            exploration_scale = 1.0
+            
+        reward = 0.0
+        counts = voxelgrid.get_data_np(self.count_map)
+        difference = counts - old_counts
+        counts = counts/(self.max_steps*5)
+        diff_mask = difference > 0
+        
+        # Base step penalty
+        reward -= 0.01
+        
+        # Scale rewards for newly discovered voxels
+        voxel_rewards = (1.0 - counts)[diff_mask] * exploration_scale
+        reward = voxel_rewards.sum() / (4**3 / 0.3**3)
+
 
         self.total_reward += reward
     
@@ -245,7 +274,12 @@ class DroneExplorationEnv(gym.Env):
         #print("Time taken for step: ", end_time - time_start)
 
 
-        if self.step_count > self.max_steps:
+
+        if completeness > 0.95:
+            reward += 20.0
+            reward += 100.0 * (1 - self.step_count / self.max_steps)
+
+        if self.step_count >= self.max_steps:
             print("Completessness: ", completeness)
             return observation, reward, done, True, info
         return observation, reward, done, False, info

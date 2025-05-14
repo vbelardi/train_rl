@@ -1,148 +1,123 @@
+##################
+# SWARM #
 
 import gymnasium as gym
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
-from swarm_gym import DroneExplorationEnv
-import voxelgrid
-from stable_baselines3 import PPO
-from stable_baselines3.common.env_checker import check_env
+from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor, VecNormalize, VecFrameStack
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.env_util import make_vec_env
 from stable_baselines3.common.callbacks import CheckpointCallback
-import torch.nn.functional as F
-import torch.nn as nn
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
-from stable_baselines3.common.vec_env import VecNormalize
+from sb3_contrib import RecurrentPPO
+import voxelgrid
+from swarm_gym import DroneExplorationEnv
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-def downsample_voxel_grid_priority(voxel_input, output_size):
-    """
-    Downsamples (B,3,D,H,W) en appliquant priorité obstacle>unknown>free via adaptive pool.
-    """
-    unk  = voxel_input[:, 0:1]
-    free = voxel_input[:, 1:2]
-    obs  = voxel_input[:, 2:3]
-    unk_ds  = F.adaptive_max_pool3d(unk,  output_size).squeeze(1)
-    free_ds = F.adaptive_max_pool3d(free, output_size).squeeze(1)
-    obs_ds  = F.adaptive_max_pool3d(obs,  output_size).squeeze(1)
-    labels = torch.ones_like(obs_ds, dtype=torch.long)    # par défaut free=1
-    labels[unk_ds  > 0] = 0   # unknown
-    labels[obs_ds  > 0] = 2   # obstacle
-    voxel_down = F.one_hot(labels, num_classes=3)
-    return voxel_down.permute(0,4,1,2,3).float()
-
-class CustomCombinedExtractor(BaseFeaturesExtractor):
+class Custom3DGridExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space, features_dim=256):
         super().__init__(observation_space, features_dim)
-        # full voxel shape:
         D, H, W = observation_space.spaces["observation"].shape
-
-        # 3D CNN with larger kernels and dilation for wider receptive field
+        drone_shape = observation_space.spaces["drone_positions"].shape
+        # 3D CNN
         self.cnn3d = nn.Sequential(
-            # Larger first kernel to capture broader context
-            nn.Conv3d(3, 16, kernel_size=5, padding=2, padding_mode = 'replicate'), nn.ReLU(),
-            nn.Conv3d(16, 32, kernel_size=3, padding=1, padding_mode = 'replicate'), nn.ReLU(), nn.AvgPool3d(2), 
-            nn.Conv3d(32, 64, kernel_size=(5,5,3), padding=(2,2,1), padding_mode = 'replicate'), nn.ReLU(), nn.AvgPool3d(2),
+            nn.Conv3d(3, 32, (5,5,3), (2,2,1), (1,1,1)), nn.ReLU(),
+            nn.Conv3d(32, 32, (5,5,3), (2,2,1), (1,1,1)), nn.ReLU(),
+            nn.Conv3d(32,64,3,2,1), nn.ReLU(),
+            nn.Conv3d(64,64,3,2,1), nn.ReLU(),
+            nn.Conv3d(64,128,3,1,1), nn.ReLU(),
+            nn.Conv3d(128,128,3,1,1), nn.ReLU(),
             nn.Flatten()
         )
-        # determine flattened size
         with torch.no_grad():
-            dummy = torch.zeros(1, 3, D//4, H//4, W//4)
-            cnn_out = self.cnn3d(dummy).shape[1]
-
-        # project CNN features into a compact vector
-        self.cnn_proj = nn.Sequential(
-            nn.Linear(cnn_out, 512), nn.ReLU(), nn.LayerNorm(512)
-        )
-
-        # MLP for drone position encoding
-        pos_dim = observation_space.spaces["drone_positions"].shape[0]
+            d = D//4; h = H//4; w = W//4
+            dummy = torch.zeros(1,3,d,h,w)
+            flat = self.cnn3d(dummy).shape[1]
+        # position MLP
         self.pos_mlp = nn.Sequential(
-            nn.Linear(pos_dim, 64), nn.ReLU(),
-            nn.Linear(64, 128), nn.ReLU(),
-            nn.LayerNorm(128)
+            nn.Linear(drone_shape[0],32), nn.ReLU(),
+            nn.Linear(32,64), nn.ReLU(),
+            nn.Linear(64,64), nn.ReLU(),
         )
-
-        # fusion MLP
-        self.fusion = nn.Sequential(
-            nn.Linear(512 + 128, features_dim), nn.ReLU()
+        # fusion
+        self.fuse = nn.Sequential(
+            nn.Linear(flat+64,2048), nn.ReLU(),
+            nn.Linear(2048,1024), nn.ReLU(),
+            nn.Linear(1024,512), nn.ReLU(),
+            nn.Linear(512,features_dim), nn.ReLU()
         )
-
         self._features_dim = features_dim
 
     def forward(self, obs):
-        # one-hot encode occupancy channels
-        vox = obs["observation"].long()
-        u = (vox == 0).unsqueeze(1).float()
-        f = (vox == 1).unsqueeze(1).float()
-        o = (vox == 2).unsqueeze(1).float()
-        x = torch.cat([u, f, o], dim=1)  # (B,2,D,H,W)
+        v = obs["observation"].long()
+        u = (v==0).unsqueeze(1).float()
+        f = (v==1).unsqueeze(1).float()
+        o = (v==2).unsqueeze(1).float()
+        x = torch.cat([u,f,o],dim=1)
         _, D, H, W = obs["observation"].shape
-        x_small = F.adaptive_avg_pool3d(x, output_size=(D//4, H//4, W//4))
+        x = F.adaptive_avg_pool3d(x, output_size=(D//4, H//4, W//4))
+        c = self.cnn3d(x)
+        p = self.pos_mlp(obs["drone_positions"])
+        return self.fuse(torch.cat([c,p],1))
 
-        # CNN feature extraction
-        c = self.cnn3d(x_small)        # (B, cnn_out)
-        c = self.cnn_proj(c)     # (B,512)
 
-        # position embedding
-        p = self.pos_mlp(obs["drone_positions"])  # (B,128)
-
-        # fuse and return
-        return self.fusion(torch.cat([c, p], dim=1))  # (B, features_dim)
+def make_env():
+    env = DroneExplorationEnv()
+    return env
 
 
 if __name__ == "__main__":
-    # création de l'env
-    env = make_vec_env(DroneExplorationEnv, n_envs=20, vec_env_cls=SubprocVecEnv)
-    #env = VecNormalize(env, norm_obs=True, norm_reward=True)
-    check_env(DroneExplorationEnv(), warn=True)
+    venv = make_vec_env(DroneExplorationEnv, n_envs=20, vec_env_cls=SubprocVecEnv)
+    #venv = VecNormalize(venv, norm_obs=True, norm_reward=True)
+    #venv = VecFrameStack(venv, n_stack=4)
 
     policy_kwargs = dict(
-        features_extractor_class=CustomCombinedExtractor,
-        features_extractor_kwargs=dict(features_dim=256)
+        features_extractor_class=Custom3DGridExtractor,
+        features_extractor_kwargs=dict(features_dim=256),
     )
 
-    model = PPO(
-        "MultiInputPolicy", env,
+    model = RecurrentPPO(
+        "MultiInputLstmPolicy", venv,
+        device=device,
         policy_kwargs=policy_kwargs,
-        verbose=1,
-        n_steps=512,
-        batch_size=128,
-        ent_coef=0.05,
-        learning_rate=1e-4,
-        clip_range=0.1,
-
+        n_steps=512, n_epochs=15,
+        learning_rate=3e-4, gamma=0.997,
+        gae_lambda=0.95, ent_coef=1e-3,
+        clip_range=0.2, verbose=1
     )
-
-    cb = CheckpointCallback(save_freq=50_000, save_path="./models/", name_prefix="ppo_ckpt")
+    cb = CheckpointCallback(save_freq=25_000, save_path="./models/", name_prefix="multi_drone_check")
     model.learn(total_timesteps=10_000_000, callback=cb)
-    model.save("ppo_drone_exploration_model")
+    model.save("rppo_multidrone_model")
+
 
 '''
 if __name__ == "__main__":
     # 1. Create your vectorized environment
-    env = make_vec_env(DroneExplorationEnv, n_envs=10, vec_env_cls=SubprocVecEnv)
-    check_env(DroneExplorationEnv(), warn=True)
+    env = make_vec_env(DroneExplorationEnv, n_envs=20, vec_env_cls=SubprocVecEnv)
 
     # 2. Load the existing model (and re‑attach it to our env)
-    model = PPO.load("ppo_drone_exploration_model", env=env)
+    model = RecurrentPPO.load("./models/ppo_finetune_9000000_steps", env=env, learning_rate=2e-6, gamma=0.997,ent_coef=5e-3, clip_range=0.2)
     # Note: custom_objects is only needed if you want to override saved hyperparams.
 
     # 3. (Optional) Set up a checkpoint callback so you get periodic backups
     checkpoint_callback = CheckpointCallback(
-        save_freq=50_000,
+        save_freq=25_000,
         save_path="./models/",
-        name_prefix="ppo_checkpoint"
+        name_prefix="ppo_finetune"
     )
 
     # 4. Continue training for additional timesteps
-    additional_timesteps = 500_000  # e.g. train 500k more steps
+    additional_timesteps = 4_000_000  # e.g. train 500k more steps
     model.learn(
         total_timesteps=additional_timesteps,
-        reset_num_timesteps=False
+        reset_num_timesteps=False,
+        callback=checkpoint_callback
     )
 
     # 5. Save (overwrite) the improved model
-    model.save("ppo_drone_exploration_model")
+    model.save("ppo_finetune_model")
     print(f"Model re‑trained for {additional_timesteps} steps and saved.")
 '''
