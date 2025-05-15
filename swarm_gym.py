@@ -24,7 +24,7 @@ class DroneExplorationEnv(gym.Env):
         super(DroneExplorationEnv, self).__init__()
         
         self.voxel_size = 0.3
-        self.num_drones = 1
+        self.num_drones = 2
         
         # Chargement de la grille voxel avec la configuration
         self.global_vg = voxelgrid.create_voxelgrid_from_config("./src/multi_agent_pkgs/env_builder/config/env_RL20_config.yaml")
@@ -32,7 +32,7 @@ class DroneExplorationEnv(gym.Env):
         self.voxel_space_size = self.global_vg.get_dim()
         self.origin = self.global_vg.get_origin()
 
-        self.max_steps = 512
+        self.max_steps = 256
         self.step_count = 0
         self.total_reward = 0
         
@@ -161,9 +161,12 @@ class DroneExplorationEnv(gym.Env):
         """Retourne l'état actuel sous forme de dictionnaire."""
         obs = voxelgrid.get_data_np(self.observation)
         obs = np.where(obs == -1, 0, np.where(obs == 0, 1, 2))
+        norm_drone_pos = self.drone_positions.copy()
+        for i in range(self.num_drones):
+            norm_drone_pos[i*3:(i+1)*3] = (self.drone_positions[i*3:(i+1)*3] - self.origin) / self.global_vg.get_real_dim()
         return {
             "observation": obs.astype(np.uint8),
-            "drone_positions": (self.drone_positions/self.global_vg.get_real_dim()).astype(np.float32)
+            "drone_positions": (norm_drone_pos).astype(np.float32)
         }
 
     def direction_to_goal_point(self, drone_position, direction_vector, voxel_grid_origin, voxel_grid_dims):
@@ -268,7 +271,11 @@ class DroneExplorationEnv(gym.Env):
         obs = voxelgrid.get_data_np(observation["observation"])
         obs = np.where(obs == -1, 0, np.where(obs == 0, 1, 2))
         observation["observation"] = obs.astype(np.uint8)
-        observation["drone_positions"] = (self.drone_positions/self.global_vg.get_real_dim()).astype(np.float32)
+        # Normalize drone positions to the voxel grid dimensions
+        norm_drone_pos = self.drone_positions.copy()
+        for i in range(self.num_drones):
+            norm_drone_pos[i*3:(i+1)*3] = (self.drone_positions[i*3:(i+1)*3] - self.origin) / self.global_vg.get_real_dim()
+        observation["drone_positions"] = (norm_drone_pos).astype(np.float32)
 
         #end_time = time.time()
         #print("Time taken for step: ", end_time - time_start)

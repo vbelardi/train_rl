@@ -68,7 +68,7 @@ def make_env():
     env = DroneExplorationEnv()
     return env
 
-
+'''
 if __name__ == "__main__":
     venv = make_vec_env(DroneExplorationEnv, n_envs=20, vec_env_cls=SubprocVecEnv)
     #venv = VecNormalize(venv, norm_obs=True, norm_reward=True)
@@ -83,9 +83,9 @@ if __name__ == "__main__":
         "MultiInputLstmPolicy", venv,
         device=device,
         policy_kwargs=policy_kwargs,
-        n_steps=512, n_epochs=15,
-        learning_rate=3e-4, gamma=0.997,
-        gae_lambda=0.95, ent_coef=1e-3,
+        n_steps=256, n_epochs=15,
+        learning_rate=3e-4, gamma=0.99,
+        gae_lambda=0.95, ent_coef=5e-3,
         clip_range=0.2, verbose=1
     )
     cb = CheckpointCallback(save_freq=25_000, save_path="./models/", name_prefix="multi_drone_check")
@@ -99,18 +99,18 @@ if __name__ == "__main__":
     env = make_vec_env(DroneExplorationEnv, n_envs=20, vec_env_cls=SubprocVecEnv)
 
     # 2. Load the existing model (and re‑attach it to our env)
-    model = RecurrentPPO.load("./models/ppo_finetune_9000000_steps", env=env, learning_rate=2e-6, gamma=0.997,ent_coef=5e-3, clip_range=0.2)
+    model = RecurrentPPO.load("./models/multi_drone_check_3000000_steps", env=env, learning_rate=3e-6, gamma=0.997,ent_coef=5e-3, clip_range=0.2)
     # Note: custom_objects is only needed if you want to override saved hyperparams.
 
     # 3. (Optional) Set up a checkpoint callback so you get periodic backups
     checkpoint_callback = CheckpointCallback(
         save_freq=25_000,
         save_path="./models/",
-        name_prefix="ppo_finetune"
+        name_prefix="multi_drone_check"
     )
 
     # 4. Continue training for additional timesteps
-    additional_timesteps = 4_000_000  # e.g. train 500k more steps
+    additional_timesteps = 10_000_000  # e.g. train 500k more steps
     model.learn(
         total_timesteps=additional_timesteps,
         reset_num_timesteps=False,
@@ -120,4 +120,4 @@ if __name__ == "__main__":
     # 5. Save (overwrite) the improved model
     model.save("ppo_finetune_model")
     print(f"Model re‑trained for {additional_timesteps} steps and saved.")
-'''
+
