@@ -9,7 +9,7 @@ import numpy as np
 from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor, VecNormalize, VecFrameStack
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from sb3_contrib import RecurrentPPO
 import voxelgrid

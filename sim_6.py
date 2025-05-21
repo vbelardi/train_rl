@@ -9,7 +9,7 @@ import numpy as np
 from stable_baselines3.common.vec_env import DummyVecEnv, VecMonitor, VecNormalize, VecFrameStack
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.env_util import make_vec_env
-from stable_baselines3.common.callbacks import CheckpointCallback
+from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from sb3_contrib import RecurrentPPO
 import voxelgrid
@@ -115,7 +115,7 @@ if __name__ == "__main__":
         gae_lambda=0.95, ent_coef=5e-3,
         clip_range=0.2, verbose=1
     )
-    cb = CheckpointCallback(save_freq=50_000, save_path="./sim1/", name_prefix="sim1_check")
+    cb = CheckpointCallback(save_freq=50_000, save_path="./sim6/", name_prefix="sim6_check")
     lr_scheduler = LearningRateScheduler(initial_lr=3e-4, min_lr=5e-6, decay_factor=0.75, decay_steps=500_000)
 
     callbacks = [cb, lr_scheduler]
