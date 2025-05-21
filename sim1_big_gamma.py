@@ -13,7 +13,7 @@ from stable_baselines3.common.callbacks import CheckpointCallback, BaseCallback
 from stable_baselines3.common.torch_layers import BaseFeaturesExtractor
 from sb3_contrib import RecurrentPPO
 import voxelgrid
-from gym_quad import DroneExplorationEnv
+from swarm_gym_mindist import DroneExplorationEnv
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -111,14 +111,13 @@ if __name__ == "__main__":
         device=device,
         policy_kwargs=policy_kwargs,
         n_steps=180, n_epochs=10,
-        learning_rate=3e-4, gamma=0.98,
+        learning_rate=3e-4, gamma=0.999,
         gae_lambda=0.95, ent_coef=5e-3,
         clip_range=0.2, verbose=1
     )
-    cb = CheckpointCallback(save_freq=50_000, save_path="./sim5/", name_prefix="sim5_check")
+    cb = CheckpointCallback(save_freq=50_000, save_path="./sim1_small_gamma/", name_prefix="sim1_small_gamma_check")
     lr_scheduler = LearningRateScheduler(initial_lr=3e-4, min_lr=5e-6, decay_factor=0.75, decay_steps=500_000)
 
     callbacks = [cb, lr_scheduler]
     model.learn(total_timesteps=10_000_000, callback=callbacks)
-    model.save("sim5_final")
-
+    model.save("sim1_small_gamma_final")
