@@ -169,5 +169,5 @@ if __name__ == "__main__":
 
     callbacks = [cb, lr_scheduler]
     model.learn(total_timesteps=10_000_000, callback=callbacks)
-    model.save("rppo_multidrone_model")
+    model.save("sim5_final")
 
