@@ -2,7 +2,7 @@ import gymnasium as gym
 import torch
 import numpy as np
 from stable_baselines3.common.vec_env import DummyVecEnv
-from stable_baselines3.common.callbacks import BaseCallback
+from stable_baselines3.common.callbacks import BaseCallback, CheckpointCallback
 from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
 
@@ -66,7 +66,8 @@ if __name__ == "__main__":
         decay_steps=100,  # Smaller number for quick testing
         verbose=1
     )
-    
+    cb = CheckpointCallback(save_freq=50_000, save_path="./test/", name_prefix="test")
+    callbacks = [cb, lr_scheduler]
     # Train the model with the scheduler
-    model.learn(total_timesteps=2000, callback=lr_scheduler)
+    model.learn(total_timesteps=2000, callback=callbacks)
     print("Training completed")
