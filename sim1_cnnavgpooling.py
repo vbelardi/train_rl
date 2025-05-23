@@ -20,45 +20,50 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 
+
 class Custom3DGridExtractor(BaseFeaturesExtractor):
     def __init__(self, observation_space, features_dim=256):
         super().__init__(observation_space, features_dim)
         D, H, W = observation_space.spaces["observation"].shape
         drone_shape = observation_space.spaces["drone_positions"].shape
-        # 3D CNN
+        
+        
+        # 3D CNN with asymmetric pooling to respect spatial differences
         self.cnn3d = nn.Sequential(
-            nn.Conv3d(3, 32, (5,5,3), (2,2,1), (1,1,1)), nn.ReLU(),
-            nn.AvgPool3d((2,2,1), (2,2,1)),  # Added avg pooling
+            # First block - reduce xy but preserve z
+            nn.Conv3d(3, 32, (5,5,3), (2,2,1), (1,1,1)), 
+            nn.BatchNorm3d(32), nn.ReLU(),
+            nn.AvgPool3d((2,2,1), (2,2,1)),  # xy pooling only
             
-            nn.Conv3d(32, 64, (3,3,3), (1,1,1), (1,1,1)), nn.ReLU(),
-            nn.AvgPool3d((2,2,1), (2,2,1)),  # Added avg pooling
+            # Second block - reduce xy but preserve z
+            nn.Conv3d(32, 64, (3,3,3), (1,1,1), (1,1,1)), 
+            nn.BatchNorm3d(64), nn.ReLU(),
+            nn.AvgPool3d((2,2,1), (2,2,1)),  # xy pooling only
             
-            nn.Conv3d(64, 96, 3, 1, 1), nn.ReLU(),
-            nn.AvgPool3d(2, 2),  # Added avg pooling
-            
-            nn.Conv3d(96, 128, 3, 1, 1), nn.ReLU(),
-            
-            nn.Conv3d(128, 160, 3, 1, 1), nn.ReLU(),
-            nn.AvgPool3d(2, 2),  # Added avg pooling
+            # Third block - now we can reduce z a bit
+            nn.Conv3d(64, 128, (3,3,2), (1,1,1), (1,1,0)), 
+            nn.BatchNorm3d(128), nn.ReLU(),
+            nn.AvgPool3d((2,2,2), (2,2,2)),  # Now pool z too
+            # Fourth block - maintain proportional dimensions
+            nn.Conv3d(128, 256, (3,3,2), (1,1,1), (1,1,0)),
+            nn.BatchNorm3d(256), nn.ReLU(),
             
             nn.Flatten()
         )
-        with torch.no_grad():
-            d = D//4; h = H//4; w = W//4
-            dummy = torch.zeros(1,3,d,h,w)
-            flat = self.cnn3d(dummy).shape[1]
-        # position MLP
+        
+        
+        # Position MLP with BatchNorm
         self.pos_mlp = nn.Sequential(
-            nn.Linear(drone_shape[0],32), nn.ReLU(),
-            nn.Linear(32,64), nn.ReLU(),
-            nn.Linear(64,64), nn.ReLU(),
+            nn.Linear(drone_shape[0], 32), nn.BatchNorm1d(32), nn.ReLU(),
+            nn.Linear(32, 64), nn.BatchNorm1d(64), nn.ReLU(),
+            nn.Linear(64, 64), nn.BatchNorm1d(64), nn.ReLU(),
         )
-        # fusion
+        
+        # Fusion network with proper sizing
         self.fuse = nn.Sequential(
-            nn.Linear(flat+64,2048), nn.ReLU(),
-            nn.Linear(2048,1024), nn.ReLU(),
-            nn.Linear(1024,512), nn.ReLU(),
-            nn.Linear(512,features_dim), nn.ReLU()
+            nn.Linear(flat+64, 1024), nn.BatchNorm1d(1024), nn.ReLU(),
+            nn.Linear(1024, 512), nn.BatchNorm1d(512), nn.ReLU(),
+            nn.Linear(512, features_dim), nn.ReLU()
         )
         self._features_dim = features_dim
 
@@ -68,11 +73,10 @@ class Custom3DGridExtractor(BaseFeaturesExtractor):
         f = (v==1).unsqueeze(1).float()
         o = (v==2).unsqueeze(1).float()
         x = torch.cat([u,f,o],dim=1)
-        _, D, H, W = obs["observation"].shape
-        x = F.adaptive_avg_pool3d(x, output_size=(D//4, H//4, W//4))
         c = self.cnn3d(x)
         p = self.pos_mlp(obs["drone_positions"])
         return self.fuse(torch.cat([c,p],1))
+
 
 
 
