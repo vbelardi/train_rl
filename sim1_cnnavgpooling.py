@@ -61,7 +61,7 @@ class Custom3DGridExtractor(BaseFeaturesExtractor):
 
         # Calculate the flattened size after the CNN
         with torch.no_grad():
-            dummy = torch.zeros(1,3,-D,H,W)
+            dummy = torch.zeros(1,3,D,H,W)
             flat = self.cnn3d(dummy).shape[1]
         
         # Fusion network with proper sizing
