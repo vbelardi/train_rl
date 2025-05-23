@@ -52,12 +52,16 @@ class Custom3DGridExtractor(BaseFeaturesExtractor):
         )
         
         
+        
         # Position MLP with BatchNorm
         self.pos_mlp = nn.Sequential(
             nn.Linear(drone_shape[0], 32), nn.BatchNorm1d(32), nn.ReLU(),
             nn.Linear(32, 64), nn.BatchNorm1d(64), nn.ReLU(),
             nn.Linear(64, 64), nn.BatchNorm1d(64), nn.ReLU(),
         )
+        with torch.no_grad():
+            dummy = torch.zeros(1,3,-D,H,W)
+            flat = self.cnn3d(dummy).shape[1]
         
         # Fusion network with proper sizing
         self.fuse = nn.Sequential(
