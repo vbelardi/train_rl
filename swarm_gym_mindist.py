@@ -9,8 +9,6 @@ from gymnasium import spaces
 import time 
 
 
-import open3d as o3d
-
 import voxelgrid
 
 
@@ -247,7 +245,7 @@ class DroneExplorationEnv(gym.Env):
 
 
         if completeness > 0.95:
-            reward += 100.0
+            reward += 20.0
             reward += 500.0 * (1 - self.step_count / self.max_steps)
             print("Episode completed with completeness: ", completeness, " at step: ", self.step_count)
             done = True
@@ -256,107 +254,3 @@ class DroneExplorationEnv(gym.Env):
             print("Completessness: ", completeness)
             return observation, reward, done, True, info
         return observation, reward, done, False, info
-
-
-
-    # --------------------- Rendering Functions ---------------------
-
-    def render_open3d(self):
-        points = []
-        colors = []
-        for x in range(self.voxel_space_size[0]):
-            for y in range(self.voxel_space_size[1]):
-                for z in range(self.voxel_space_size[2]):
-                    val = self.observation.get_voxel_int([x, y, z])
-                    if val == 0:
-                        points.append((x, y, z))
-                        colors.append([0.0, 0.0, 1.0])
-                    if val == 100:
-                        points.append((x, y, z))
-                        colors.append([1.0, 0.0, 0.0])
-        point_cloud = o3d.geometry.PointCloud()
-        point_cloud.points = o3d.utility.Vector3dVector(points)
-        point_cloud.colors = o3d.utility.Vector3dVector(colors)
-        voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(point_cloud, voxel_size=self.voxel_size)
-
-        # Create a blue sphere for each drone position
-        drone_spheres = []
-        for pos in self.drone_positions:            
-            sphere = o3d.geometry.TriangleMesh.create_sphere(radius=self.voxel_size)
-            # Translate the sphere to the drone's world position
-            sphere.translate((pos-self.global_vg.get_origin())/0.3)
-            sphere.paint_uniform_color([0.0, 1.0, 0.0])  # green color
-            drone_spheres.append(sphere)
-        
-        
-
-        # Render both the voxel grid and the drone spheres
-        o3d.visualization.draw_geometries([voxel_grid]+drone_spheres)
-
-    def render_open3d_actions(self, actions):
-        points = []
-        colors = []
-        for x in range(self.voxel_space_size[0]):
-            for y in range(self.voxel_space_size[1]):
-                for z in range(self.voxel_space_size[2]):
-                    val = self.observation.get_voxel_int([x, y, z])
-                    if val == 0:
-                        points.append((x, y, z))
-                        colors.append([0.0, 0.0, 1.0])
-                    if val == 100:
-                        points.append((x, y, z))
-                        colors.append([1.0, 0.0, 0.0])
-        point_cloud = o3d.geometry.PointCloud()
-        point_cloud.points = o3d.utility.Vector3dVector(points)
-        point_cloud.colors = o3d.utility.Vector3dVector(colors)
-        voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(point_cloud, voxel_size=self.voxel_size)
-
-        # Create a blue sphere for each drone position
-        drone_spheres = []
-        for pos in self.drone_positions:            
-            sphere = o3d.geometry.TriangleMesh.create_sphere(radius=self.voxel_size)
-            # Translate the sphere to the drone's world position
-            sphere.translate((pos-self.global_vg.get_origin())/0.3)
-            sphere.paint_uniform_color([0.0, 1.0, 0.0])  # green color
-            drone_spheres.append(sphere)
-        
-        goal_spheres = []
-        for pos in actions:            
-            sphere = o3d.geometry.TriangleMesh.create_sphere(radius=self.voxel_size)
-            # Translate the sphere to the drone's world position
-            sphere.translate((pos-self.global_vg.get_origin())/0.3)
-            sphere.paint_uniform_color([1.0, 0.0, 1.0])  # Blue color
-            goal_spheres.append(sphere)
-        
-
-        # Render both the voxel grid and the drone spheres
-        o3d.visualization.draw_geometries([voxel_grid]+drone_spheres+goal_spheres)
-
-    def render_open3d_init(self):
-        points = []
-        colors = []
-        for x in range(self.voxel_space_size[0]):
-            for y in range(self.voxel_space_size[1]):
-                for z in range(self.voxel_space_size[2]):
-                    val = self.global_vg.get_voxel_int([x, y, z])
-                    if val == 100:
-                        points.append((x, y, z))
-                        colors.append([1.0, 0.0, 0.0])
-        point_cloud = o3d.geometry.PointCloud()
-        point_cloud.points = o3d.utility.Vector3dVector(points)
-        point_cloud.colors = o3d.utility.Vector3dVector(colors)
-        voxel_grid = o3d.geometry.VoxelGrid.create_from_point_cloud(point_cloud, voxel_size=self.voxel_size)
-
-        # Create a blue sphere for each drone position
-        drone_spheres = []
-        for pos in self.drone_positions:            
-            sphere = o3d.geometry.TriangleMesh.create_sphere(radius=0.5*self.voxel_size)
-            # Translate the sphere to the drone's world position
-            sphere.translate(pos)
-            sphere.paint_uniform_color([0.0, 0.0, 1.0])  # Blue color
-            drone_spheres.append(sphere)
-
-        # Render both the voxel grid and the drone spheres
-        o3d.visualization.draw_geometries([voxel_grid] + drone_spheres)
-
-

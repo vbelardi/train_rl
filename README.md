@@ -54,7 +54,7 @@ Cela permet de garantir que le système puisse trouver les modules Python néces
 
 ```bash
 cd build_rl/ && make -j$(nproc)
-cd .. && python swarm_simulation.py
+cd .. && python final_sim.py
 ```
 
 ## Notes complémentaires

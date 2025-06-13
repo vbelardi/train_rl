@@ -122,6 +122,7 @@ if __name__ == "__main__":
     model.learn(total_timesteps=10_000_000, callback=cb)
     model.save("sim1_final")
 
+########## CODE FOR FINE-TUNING AN EXISTING MODEL ##########
 '''
 if __name__ == "__main__":
     # 1. Create your vectorized environment
